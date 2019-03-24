@@ -1,0 +1,21 @@
+{
+	"name": "rfid_controller",
+	"version": "1.0.0",
+	"description": "Starts playlists based on a RFID chip presented to a RFID reader connected to your RaspberryPi",
+	"main": "index.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1"
+	},
+	"author": "Matthias Feist",
+	"license": "ISC",
+	"volumio_info": {
+		"prettyName": "RFID Controller",
+		"icon": "fa-lightbulb-o",
+		"plugin_type": "user_interface"
+	},
+	"dependencies": {
+		"fs-extra": "^0.28.0",
+		"kew": "^0.7.0",
+		"v-conf": "^1.4.0"
+	}
+}
