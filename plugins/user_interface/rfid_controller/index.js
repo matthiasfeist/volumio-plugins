@@ -1,267 +1,191 @@
-'use strict';
+'use strict'
 
-var libQ = require('kew');
-var fs=require('fs-extra');
-var config = new (require('v-conf'))();
-var exec = require('child_process').exec;
-var execSync = require('child_process').execSync;
+var libQ = require('kew')
+var fs = require('fs-extra')
+var config = new (require('v-conf'))()
+var exec = require('child_process').exec
+var execSync = require('child_process').execSync
+const rfIdReader = require('./rfid-reader')
 
-
-module.exports = rfidController;
+module.exports = rfidController
 function rfidController(context) {
-	var self = this;
+  var self = this
 
-	this.context = context;
-	this.commandRouter = this.context.coreCommand;
-	this.logger = this.context.logger;
-	this.configManager = this.context.configManager;
-
+  this.context = context
+  this.commandRouter = this.context.coreCommand
+  this.logger = this.context.logger
+  this.configManager = this.context.configManager
+  this.lastCardId = ''
 }
 
+rfidController.prototype.onVolumioStart = function() {
+  var self = this
+  var configFile = this.commandRouter.pluginManager.getConfigurationFile(
+    this.context,
+    'config.json'
+  )
+  this.config = new (require('v-conf'))()
+  this.config.loadFile(configFile)
 
-
-rfidController.prototype.onVolumioStart = function()
-{
-	var self = this;
-	var configFile=this.commandRouter.pluginManager.getConfigurationFile(this.context,'config.json');
-	this.config = new (require('v-conf'))();
-	this.config.loadFile(configFile);
-
-    return libQ.resolve();
+  return libQ.resolve()
 }
 
 rfidController.prototype.onStart = function() {
-    var self = this;
-	var defer=libQ.defer();
+  var self = this
+  var defer = libQ.defer()
 
+  self.logger.info('RFID CONTROLLER PLUGIN: Trying to start RFID reader')
+  rfIdReader(this.onCardHasBeenFound.bind(this), this.logger)
+  self.logger.info('RFID CONTROLLER PLUGIN: RFID reader started')
 
-	// Once the Plugin has successfull started resolve the promise
-	defer.resolve();
+  // Once the Plugin has successfull started resolve the promise
+  defer.resolve()
 
-    return defer.promise;
-};
+  return defer.promise
+}
+
+rfidController.prototype.onCardHasBeenFound = function(cardId) {
+  if (cardId === this.lastCardId) {
+    return
+  }
+  this.lastCardId = cardId
+
+  const configKey = 'RFIDtoPlaylist.' + cardId
+  const configuredPlaylist = this.config.get(configKey)
+  if (configuredPlaylist === undefined) {
+    this.config.set(configKey, '')
+    this.logger.info(
+      `RFID CONTROLLER PLUGIN: New RFID ID detected. Added to config. Card ID: ${cardId}`
+    )
+    this.commandRouter.pushToastMessage(
+      'success',
+      'A new RFID card has been detected',
+      'You can configure the playlist to play in the plugin settings'
+    )
+    return
+  }
+
+  if (!configuredPlaylist) {
+    this.logger.info(
+      `RFID CONTROLLER PLUGIN: Card detected but no playist configured. Card ID: ${cardId}`
+    )
+    this.commandRouter.pushToastMessage(
+      'warning',
+      'No playlist configured for this RFID card',
+      'You can configure the playlist in the plugin settings'
+    )
+    return
+  }
+
+  this.commandRouter.pushToastMessage(
+    'info',
+    'Playlist started from RFID event',
+    `Starting playlist "${configuredPlaylist}"`
+  )
+
+  this.commandRouter.playPlaylist(configuredPlaylist)
+}
 
 rfidController.prototype.onStop = function() {
-    var self = this;
-    var defer=libQ.defer();
+  var self = this
+  var defer = libQ.defer()
 
-    // Once the Plugin has successfull stopped resolve the promise
-    defer.resolve();
+  // Once the Plugin has successfull stopped resolve the promise
+  defer.resolve()
 
-    return libQ.resolve();
-};
+  return libQ.resolve()
+}
 
 rfidController.prototype.onRestart = function() {
-    var self = this;
-    // Optional, use if you need it
-};
-
-
-// Configuration Methods -----------------------------------------------------------------------------
+  var self = this
+  // Optional, use if you need it
+}
 
 rfidController.prototype.getUIConfig = function() {
-    var defer = libQ.defer();
-    var self = this;
+  const defer = libQ.defer()
+  const knownRFIDcardIDs = this.config.getKeys('RFIDtoPlaylist')
+  this.logger.info('RFID CONTROLLER PLUGIN: Config generated.')
+  this.logger.info(
+    'RFID CONTROLLER PLUGIN: Known RFID CardIDs in config: ',
+    knownRFIDcardIDs
+  )
 
-    var lang_code = this.commandRouter.sharedVars.get('language_code');
+  this.commandRouter.playListManager.listPlaylist().then(playlists => {
+    let selectOptions = playlists.map(playlist => {
+      return { value: playlist, label: playlist }
+    })
+    if (selectOptions.length === 0) {
+      selectOptions = [{ value: '', label: 'No playlists found' }]
+    }
 
-    self.commandRouter.i18nJson(__dirname+'/i18n/strings_'+lang_code+'.json',
-        __dirname+'/i18n/strings_en.json',
-        __dirname + '/UIConfig.json')
-        .then(function(uiconf)
+    let sectionContent = knownRFIDcardIDs.map(cardId => {
+      const associatedPlaylist =
+        this.config.get('RFIDtoPlaylist.' + cardId) || ''
+      return {
+        id: cardId,
+        type: 'text',
+        element: 'select',
+        doc: `The playlist that should play when you touch the RFID reader with the card ${cardId}`,
+        label: `Playlist for card ID ${cardId}`,
+        value: { value: associatedPlaylist, label: associatedPlaylist },
+        options: selectOptions,
+      }
+    })
+
+    const configObj = {
+      page: {
+        label: 'RFID Controller Configuration',
+      },
+      sections: [
         {
+          id: 'playlist_config',
+          element: 'section',
+          label: 'Associate a playlist to a RFID ID',
+          icon: 'fa-plug',
+          onSave: {
+            type: 'controller',
+            endpoint: 'user_interface/rfid_controller',
+            method: 'savePlaylistConfig',
+          },
+          saveButton: {
+            label: 'Save',
+            data: knownRFIDcardIDs,
+          },
+          content: sectionContent,
+        },
+      ],
+    }
 
+    defer.resolve(configObj)
+  })
+  return defer.promise
+}
 
-            defer.resolve(uiconf);
-        })
-        .fail(function()
-        {
-            defer.reject(new Error());
-        });
+rfidController.prototype.savePlaylistConfig = function(data) {
+  for (let cardId in data) {
+    const configKey = 'RFIDtoPlaylist.' + cardId
+    this.config.set(configKey, data[cardId].value)
+  }
+  this.logger.info('RFID CONTROLLER PLUGIN: Config saved: ', data)
 
-    return defer.promise;
-};
+  return libQ.resolve({})
+}
 
 rfidController.prototype.getConfigurationFiles = function() {
-	return ['config.json'];
+  return ['config.json']
 }
 
 rfidController.prototype.setUIConfig = function(data) {
-	var self = this;
-	//Perform your installation tasks here
-};
+  var self = this
+  //Perform your installation tasks here
+}
 
 rfidController.prototype.getConf = function(varName) {
-	var self = this;
-	//Perform your installation tasks here
-};
+  var self = this
+  //Perform your installation tasks here
+}
 
 rfidController.prototype.setConf = function(varName, varValue) {
-	var self = this;
-	//Perform your installation tasks here
-};
-
-
-
-// Playback Controls ---------------------------------------------------------------------------------------
-// If your plugin is not a music_sevice don't use this part and delete it
-
-
-rfidController.prototype.addToBrowseSources = function () {
-
-	// Use this function to add your music service plugin to music sources
-    //var data = {name: 'Spotify', uri: 'spotify',plugin_type:'music_service',plugin_name:'spop'};
-    this.commandRouter.volumioAddToBrowseSources(data);
-};
-
-rfidController.prototype.handleBrowseUri = function (curUri) {
-    var self = this;
-
-    //self.commandRouter.logger.info(curUri);
-    var response;
-
-
-    return response;
-};
-
-
-
-// Define a method to clear, add, and play an array of tracks
-rfidController.prototype.clearAddPlayTrack = function(track) {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::clearAddPlayTrack');
-
-	self.commandRouter.logger.info(JSON.stringify(track));
-
-	return self.sendSpopCommand('uplay', [track.uri]);
-};
-
-rfidController.prototype.seek = function (timepos) {
-    this.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::seek to ' + timepos);
-
-    return this.sendSpopCommand('seek '+timepos, []);
-};
-
-// Stop
-rfidController.prototype.stop = function() {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::stop');
-
-
-};
-
-// Spop pause
-rfidController.prototype.pause = function() {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::pause');
-
-
-};
-
-// Get state
-rfidController.prototype.getState = function() {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::getState');
-
-
-};
-
-//Parse state
-rfidController.prototype.parseState = function(sState) {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::parseState');
-
-	//Use this method to parse the state and eventually send it with the following function
-};
-
-// Announce updated State
-rfidController.prototype.pushState = function(state) {
-	var self = this;
-	self.commandRouter.pushConsoleMessage('[' + Date.now() + '] ' + 'rfidController::pushState');
-
-	return self.commandRouter.servicePushState(state, self.servicename);
-};
-
-
-rfidController.prototype.explodeUri = function(uri) {
-	var self = this;
-	var defer=libQ.defer();
-
-	// Mandatory: retrieve all info for a given URI
-
-	return defer.promise;
-};
-
-rfidController.prototype.getAlbumArt = function (data, path) {
-
-	var artist, album;
-
-	if (data != undefined && data.path != undefined) {
-		path = data.path;
-	}
-
-	var web;
-
-	if (data != undefined && data.artist != undefined) {
-		artist = data.artist;
-		if (data.album != undefined)
-			album = data.album;
-		else album = data.artist;
-
-		web = '?web=' + nodetools.urlEncode(artist) + '/' + nodetools.urlEncode(album) + '/large'
-	}
-
-	var url = '/albumart';
-
-	if (web != undefined)
-		url = url + web;
-
-	if (web != undefined && path != undefined)
-		url = url + '&';
-	else if (path != undefined)
-		url = url + '?';
-
-	if (path != undefined)
-		url = url + 'path=' + nodetools.urlEncode(path);
-
-	return url;
-};
-
-
-
-
-
-rfidController.prototype.search = function (query) {
-	var self=this;
-	var defer=libQ.defer();
-
-	// Mandatory, search. You can divide the search in sections using following functions
-
-	return defer.promise;
-};
-
-rfidController.prototype._searchArtists = function (results) {
-
-};
-
-rfidController.prototype._searchAlbums = function (results) {
-
-};
-
-rfidController.prototype._searchPlaylists = function (results) {
-
-
-};
-
-rfidController.prototype._searchTracks = function (results) {
-
-};
-
-rfidController.prototype.goto=function(data){
-    var self=this
-    var defer=libQ.defer()
-
-// Handle go to artist and go to album function
-
-     return defer.promise;
-};
+  var self = this
+  //Perform your installation tasks here
+}
